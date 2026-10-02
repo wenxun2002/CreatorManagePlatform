@@ -1,0 +1,102 @@
+@import "tailwindcss";
+@import "@vuepic/vue-datepicker/dist/main.css";
+
+:root {
+  --brand-primary: #2563eb;
+  --brand-primary-hover: #1d4ed8;
+  --brand-primary-soft: #eff6ff;
+  --brand-gradient: linear-gradient(135deg, #2563eb 0%, #0ea5e9 100%);
+  --brand-gradient-from: #2563eb;
+  --brand-gradient-to: #0ea5e9;
+
+  --surface-page: #f5f7fb;
+  --surface-card: #ffffff;
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+  --text-muted: #94a3b8;
+  --border-subtle: #e2e8f0;
+  --trend-up: #16a34a;
+  --trend-down: #dc2626;
+}
+
+.dark {
+  --brand-primary: #3b82f6;
+  --brand-primary-hover: #60a5fa;
+  --brand-primary-soft: #1e3a5f;
+  --brand-gradient: linear-gradient(135deg, #3b82f6 0%, #38bdf8 100%);
+  --brand-gradient-from: #3b82f6;
+  --brand-gradient-to: #38bdf8;
+
+  --surface-page: #0f172a;
+  --surface-card: #1e293b;
+  --text-primary: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #64748b;
+  --border-subtle: #334155;
+  --trend-up: #22c55e;
+  --trend-down: #f87171;
+}
+
+@theme inline {
+  --color-brand: var(--brand-primary);
+  --color-brand-hover: var(--brand-primary-hover);
+  --color-brand-soft: var(--brand-primary-soft);
+  --color-page: var(--surface-page);
+  --color-card: var(--surface-card);
+  --color-ink: var(--text-primary);
+  --color-muted: var(--text-secondary);
+  --color-faint: var(--text-muted);
+  --color-line: var(--border-subtle);
+  --color-up: var(--trend-up);
+  --color-down: var(--trend-down);
+  --radius-card: 1rem;
+}
+
+@layer base {
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--surface-page);
+    color: var(--text-primary);
+    font-family:
+      'Segoe UI',
+      'PingFang SC',
+      'Microsoft YaHei',
+      system-ui,
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer utilities {
+  .bg-brand-gradient {
+    background-image: var(--brand-gradient);
+  }
+
+  .text-brand-gradient {
+    background-image: var(--brand-gradient);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+}
+
+/* Datepicker theme bridge */
+.dp__theme_light,
+.dp__theme_dark {
+  --dp-background-color: var(--surface-card);
+  --dp-text-color: var(--text-primary);
+  --dp-hover-color: var(--brand-primary-soft);
+  --dp-hover-text-color: var(--text-primary);
+  --dp-primary-color: var(--brand-primary);
+  --dp-primary-text-color: #ffffff;
+  --dp-secondary-color: var(--text-muted);
+  --dp-border-color: var(--border-subtle);
+  --dp-menu-border-color: var(--border-subtle);
+  --dp-border-color-hover: var(--brand-primary);
+}
