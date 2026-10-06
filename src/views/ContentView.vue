@@ -49,7 +49,13 @@ onMounted(() => {
       <p class="mt-1 text-sm text-muted">{{ t('content.subtitle') }}</p>
     </div>
 
-    <UploadZone @select="onUploadSelect" />
+    <UploadZone
+      :title="t('content.upload.title')"
+      :hint="t('content.upload.hint')"
+      :drop-active="t('content.upload.dropActive')"
+      :drop-hint="t('content.upload.dropHint')"
+      @select="onUploadSelect"
+    />
 
     <div class="flex flex-wrap gap-1 rounded-xl border border-line bg-card p-1 self-start">
       <button

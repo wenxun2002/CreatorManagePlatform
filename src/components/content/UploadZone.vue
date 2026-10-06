@@ -1,13 +1,28 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useI18n } from 'vue-i18n'
 import { CloudUpload } from 'lucide-vue-next'
+
+const props = withDefaults(
+  defineProps<{
+    accept?: string
+    multiple?: boolean
+    title?: string
+    hint?: string
+    dropActive?: string
+    dropHint?: string
+    compact?: boolean
+  }>(),
+  {
+    accept: 'video/mp4,video/webm,.mp4,.webm',
+    multiple: false,
+    compact: false,
+  },
+)
 
 const emit = defineEmits<{
   select: [files: FileList]
 }>()
 
-const { t } = useI18n()
 const inputRef = ref<HTMLInputElement | null>(null)
 const dragging = ref(false)
 /** Nested dragenter/leave counter — avoids flicker when crossing child nodes */
@@ -60,12 +75,13 @@ function onDragLeave(event: DragEvent) {
 <template>
   <button
     type="button"
-    class="group relative flex w-full flex-col items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed px-4 py-8 text-center transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand sm:px-6 sm:py-12"
-    :class="
+    class="group relative flex w-full flex-col items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed text-center transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+    :class="[
+      compact ? 'px-4 py-5 sm:py-6' : 'px-4 py-8 sm:px-6 sm:py-12',
       dragging
         ? 'scale-[1.01] border-solid border-brand bg-brand-soft shadow-lg shadow-brand/25 ring-4 ring-brand/30 dark:bg-brand/25 dark:ring-brand/40'
-        : 'border-line bg-card hover:border-brand hover:bg-brand-soft/50 dark:hover:bg-brand-soft/30'
-    "
+        : 'border-line bg-card hover:border-brand hover:bg-brand-soft/50 dark:hover:bg-brand-soft/30',
+    ]"
     @click="openPicker"
     @dragenter="onDragEnter"
     @dragover="onDragOver"
@@ -78,31 +94,35 @@ function onDragLeave(event: DragEvent) {
       aria-hidden="true"
     />
     <div
-      class="relative mb-4 flex h-14 w-14 items-center justify-center rounded-2xl transition-all duration-200"
-      :class="
+      class="relative mb-3 flex items-center justify-center rounded-2xl transition-all duration-200"
+      :class="[
+        compact ? 'h-11 w-11' : 'mb-4 h-14 w-14',
         dragging
           ? 'scale-110 bg-brand text-white shadow-md shadow-brand/40'
-          : 'bg-brand-soft text-brand group-hover:bg-brand group-hover:text-white'
-      "
+          : 'bg-brand-soft text-brand group-hover:bg-brand group-hover:text-white',
+      ]"
     >
-      <CloudUpload class="h-7 w-7" :class="dragging ? 'animate-bounce' : ''" />
+      <CloudUpload
+        :class="[compact ? 'h-5 w-5' : 'h-7 w-7', dragging ? 'animate-bounce' : '']"
+      />
     </div>
     <p
       class="relative text-sm font-semibold transition-colors"
       :class="dragging ? 'text-brand' : 'text-ink'"
     >
-      {{ dragging ? t('content.upload.dropActive') : t('content.upload.title') }}
+      {{ dragging ? dropActive || title : title }}
     </p>
     <p
       class="relative mt-1.5 text-xs transition-colors"
       :class="dragging ? 'font-medium text-brand' : 'text-muted'"
     >
-      {{ dragging ? t('content.upload.dropHint') : t('content.upload.hint') }}
+      {{ dragging ? dropHint || hint : hint }}
     </p>
     <input
       ref="inputRef"
       type="file"
-      accept="video/mp4,video/webm,.mp4,.webm"
+      :accept="accept"
+      :multiple="multiple"
       class="hidden"
       @change="onFileChange"
     />

@@ -1,20 +1,42 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { CalendarClock, CircleDollarSign, Download, FileText, X } from 'lucide-vue-next'
+import {
+  CalendarClock,
+  CircleDollarSign,
+  Download,
+  Loader2,
+  Paperclip,
+  X,
+} from 'lucide-vue-next'
 import type { Campaign, CampaignStatus } from '@/types/campaign'
 import { formatCompactCurrency } from '@/utils/format'
+import { useAuthStore } from '@/stores/useAuthStore'
+import UploadZone from '@/components/content/UploadZone.vue'
 
 const props = defineProps<{
   open: boolean
   campaign: Campaign | null
+  actionLoading?: boolean
 }>()
 
 const emit = defineEmits<{
   close: []
+  accept: [campaign: Campaign]
+  submitDeliverable: [
+    payload: { campaign: Campaign; file: File; description: string },
+  ]
+  approve: [campaign: Campaign]
 }>()
 
 const { t, locale } = useI18n()
+const auth = useAuthStore()
+
+const submissionFile = ref<File | null>(null)
+const submissionDesc = ref('')
+const submitError = ref('')
+
+const VIDEO_ACCEPT = 'video/mp4,video/webm,video/quicktime,.mp4,.mov,.webm'
 
 const statusClass: Record<CampaignStatus, string> = {
   pending: 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
@@ -23,20 +45,27 @@ const statusClass: Record<CampaignStatus, string> = {
   completed: 'bg-up/15 text-up',
 }
 
-const primaryActionKey = computed(() => {
-  if (!props.campaign) return 'campaigns.drawer.actions.accept'
-  switch (props.campaign.status) {
-    case 'pending':
-      return 'campaigns.drawer.actions.accept'
-    case 'in_progress':
-      return 'campaigns.drawer.actions.submitDraft'
-    case 'under_review':
-      return 'campaigns.drawer.actions.viewReview'
-    case 'completed':
-      return 'campaigns.drawer.actions.viewSummary'
-    default:
-      return 'campaigns.drawer.actions.accept'
+const isCreator = computed(() => auth.role === 'creator')
+const isManager = computed(() => auth.role === 'manager')
+
+const showSubmitForm = computed(
+  () => isCreator.value && props.campaign?.status === 'in_progress',
+)
+
+const showAccept = computed(
+  () => isCreator.value && props.campaign?.status === 'pending',
+)
+
+const showApprove = computed(
+  () => isManager.value && props.campaign?.status === 'under_review',
+)
+
+const headerAvatar = computed(() => {
+  if (!props.campaign) return ''
+  if (isManager.value) {
+    return props.campaign.creatorAvatarUrl || props.campaign.brandLogoUrl
   }
+  return props.campaign.managerAvatarUrl || props.campaign.brandLogoUrl
 })
 
 function formatDueDate(iso: string): string {
@@ -47,16 +76,54 @@ function formatDueDate(iso: string): string {
   }).format(new Date(iso))
 }
 
+function resetSubmitForm() {
+  submissionFile.value = null
+  submissionDesc.value = props.campaign?.submissionDesc ?? ''
+  submitError.value = ''
+}
+
 function onKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape' && props.open) {
+  if (event.key === 'Escape' && props.open && !props.actionLoading) {
     emit('close')
   }
+}
+
+function onVideoSelect(files: FileList) {
+  submissionFile.value = files[0] ?? null
+  submitError.value = ''
+}
+
+function onSubmitDeliverable() {
+  if (!props.campaign) return
+  if (!submissionFile.value) {
+    submitError.value = t('campaigns.drawer.videoFileRequired')
+    return
+  }
+  const desc = submissionDesc.value.trim()
+  if (!desc) {
+    submitError.value = t('campaigns.drawer.descRequired')
+    return
+  }
+  submitError.value = ''
+  emit('submitDeliverable', {
+    campaign: props.campaign,
+    file: submissionFile.value,
+    description: desc,
+  })
 }
 
 watch(
   () => props.open,
   (isOpen) => {
     document.body.style.overflow = isOpen ? 'hidden' : ''
+    if (isOpen) resetSubmitForm()
+  },
+)
+
+watch(
+  () => props.campaign?.id,
+  () => {
+    if (props.open) resetSubmitForm()
   },
 )
 
@@ -74,7 +141,7 @@ onUnmounted(() => {
         v-if="open"
         class="fixed inset-0 z-50 bg-ink/40 backdrop-blur-[2px]"
         aria-hidden="true"
-        @click.self="emit('close')"
+        @click.self="!actionLoading && emit('close')"
       />
     </Transition>
     <Transition name="drawer-panel">
@@ -88,117 +155,197 @@ onUnmounted(() => {
         :aria-label="campaign.title"
       >
         <div class="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-line md:hidden" aria-hidden="true" />
-            <!-- Header -->
-            <header class="flex shrink-0 items-start gap-3 border-b border-line px-4 py-3 sm:px-5 sm:py-4">
-              <img
-                :src="campaign.brandLogoUrl"
-                :alt="campaign.brandName"
-                class="h-11 w-11 shrink-0 rounded-xl object-cover ring-1 ring-line"
-              />
-              <div class="min-w-0 flex-1">
-                <p class="text-xs font-medium text-muted">{{ campaign.brandName }}</p>
-                <h2 class="mt-0.5 text-base font-semibold leading-snug text-ink">
-                  {{ campaign.title }}
-                </h2>
-                <span
-                  class="mt-2 inline-block rounded-full px-2.5 py-0.5 text-[11px] font-medium"
-                  :class="statusClass[campaign.status]"
-                >
-                  {{ t(`campaigns.status.${campaign.status}`) }}
-                </span>
-              </div>
-              <button
-                type="button"
-                class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-line text-muted transition-colors hover:bg-page hover:text-ink"
-                :aria-label="t('campaigns.drawer.close')"
-                @click="emit('close')"
-              >
-                <X class="h-4 w-4" />
-              </button>
-            </header>
 
-            <!-- Body -->
-            <div class="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5 sm:py-5">
-              <div class="mb-6 flex flex-wrap gap-4 rounded-xl border border-line bg-page p-4 text-sm">
-                <div class="flex items-center gap-2 text-ink">
-                  <CircleDollarSign class="h-4 w-4 text-brand" />
-                  <span class="font-semibold">{{ formatCompactCurrency(campaign.budget) }}</span>
-                </div>
-                <div class="flex items-center gap-2 text-muted">
-                  <CalendarClock class="h-4 w-4 text-faint" />
-                  <span>{{ formatDueDate(campaign.dueDate) }}</span>
-                </div>
-              </div>
-
-              <section class="mb-6">
-                <h3 class="mb-2 text-sm font-semibold text-ink">
-                  {{ t('campaigns.drawer.briefTitle') }}
-                </h3>
-                <div
-                  class="whitespace-pre-line rounded-xl border border-line bg-page p-4 text-sm leading-relaxed text-muted"
-                >
-                  {{ campaign.brief }}
-                </div>
-              </section>
-
-              <section>
-                <h3 class="mb-2 text-sm font-semibold text-ink">
-                  {{ t('campaigns.drawer.attachmentsTitle') }}
-                </h3>
-                <ul v-if="campaign.attachments.length" class="space-y-2">
-                  <li
-                    v-for="file in campaign.attachments"
-                    :key="file.id"
-                    class="flex items-center justify-between gap-3 rounded-xl border border-line bg-page px-3 py-2.5"
-                  >
-                    <div class="flex min-w-0 items-center gap-2.5">
-                      <div
-                        class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-soft text-brand"
-                      >
-                        <FileText class="h-4 w-4" />
-                      </div>
-                      <div class="min-w-0">
-                        <p class="truncate text-sm font-medium text-ink">{{ file.name }}</p>
-                        <p class="text-xs text-faint">{{ file.sizeLabel }}</p>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      class="inline-flex shrink-0 items-center gap-1 rounded-lg border border-brand/30 bg-brand-soft px-2.5 py-1.5 text-xs font-medium text-brand transition-colors hover:border-brand hover:bg-brand hover:text-white dark:border-brand/40 dark:hover:bg-brand-hover"
-                    >
-                      <Download class="h-3.5 w-3.5" />
-                      {{ t('campaigns.drawer.download') }}
-                    </button>
-                  </li>
-                </ul>
-                <p
-                  v-else
-                  class="rounded-xl border border-dashed border-line px-4 py-6 text-center text-xs text-faint"
-                >
-                  {{ t('campaigns.drawer.noAttachments') }}
-                </p>
-              </section>
-            </div>
-
-            <!-- Footer -->
-            <footer
-              class="flex shrink-0 gap-3 border-t border-line bg-card px-4 py-3 sm:px-5 sm:py-4"
-              style="padding-bottom: max(0.75rem, env(safe-area-inset-bottom))"
+        <header class="flex shrink-0 items-start gap-3 border-b border-line px-4 py-3 sm:px-5 sm:py-4">
+          <img
+            :src="headerAvatar"
+            :alt="
+              isManager
+                ? campaign.creatorName || campaign.brandName
+                : campaign.managerName || campaign.brandName
+            "
+            class="h-11 w-11 shrink-0 rounded-full object-cover ring-1 ring-line"
+          />
+          <div class="min-w-0 flex-1">
+            <p class="text-xs font-medium text-muted">
+              {{
+                isManager
+                  ? campaign.creatorName || campaign.brandName
+                  : campaign.managerName || campaign.brandName
+              }}
+            </p>
+            <h2 class="mt-0.5 text-base font-semibold leading-snug text-ink">
+              {{ campaign.title }}
+            </h2>
+            <span
+              class="mt-2 inline-block rounded-full px-2.5 py-0.5 text-[11px] font-medium"
+              :class="statusClass[campaign.status]"
             >
-              <button
-                type="button"
-                class="flex-1 rounded-xl border border-line bg-page px-4 py-2.5 text-sm font-medium text-muted transition-colors hover:text-ink"
-                @click="emit('close')"
+              {{ t(`campaigns.status.${campaign.status}`) }}
+            </span>
+          </div>
+          <button
+            type="button"
+            class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-line text-muted transition-colors hover:bg-page hover:text-ink"
+            :aria-label="t('campaigns.drawer.close')"
+            :disabled="actionLoading"
+            @click="emit('close')"
+          >
+            <X class="h-4 w-4" />
+          </button>
+        </header>
+
+        <div class="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5 sm:py-5">
+          <div class="mb-6 flex flex-wrap gap-4 rounded-xl border border-line bg-page p-4 text-sm">
+            <div class="flex items-center gap-2 text-ink">
+              <CircleDollarSign class="h-4 w-4 text-brand" />
+              <span class="font-semibold">{{ formatCompactCurrency(campaign.budget) }}</span>
+            </div>
+            <div class="flex items-center gap-2 text-muted">
+              <CalendarClock class="h-4 w-4 text-faint" />
+              <span>{{ formatDueDate(campaign.dueDate) }}</span>
+            </div>
+          </div>
+
+          <section class="mb-6">
+            <h3 class="mb-2 text-sm font-semibold text-ink">
+              {{ t('campaigns.drawer.attachmentsTitle') }}
+            </h3>
+            <ul v-if="campaign.attachments.length" class="space-y-2">
+              <li
+                v-for="file in campaign.attachments"
+                :key="file.path"
               >
-                {{ t('campaigns.drawer.cancel') }}
-              </button>
-              <button
-                type="button"
-                class="flex-1 rounded-xl bg-brand px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-brand-hover"
-              >
-                {{ t(primaryActionKey) }}
-              </button>
-            </footer>
+                <a
+                  :href="file.url"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="flex items-center gap-3 rounded-xl border border-line bg-page px-3 py-2.5 text-sm text-ink transition-colors hover:border-brand hover:bg-brand-soft/40"
+                >
+                  <Paperclip class="h-4 w-4 shrink-0 text-brand" />
+                  <span class="min-w-0 flex-1 truncate">{{ file.name }}</span>
+                  <Download class="h-4 w-4 shrink-0 text-muted" />
+                </a>
+              </li>
+            </ul>
+            <p v-else class="text-sm text-muted">{{ t('campaigns.drawer.noAttachments') }}</p>
+          </section>
+
+          <section v-if="campaign.submissionDesc || campaign.submissionFileUrl" class="mb-6">
+            <h3 class="mb-2 text-sm font-semibold text-ink">
+              {{ t('campaigns.drawer.deliverable') }}
+            </h3>
+            <p
+              v-if="campaign.submissionDesc"
+              class="mb-3 whitespace-pre-line rounded-xl border border-line bg-page p-4 text-sm leading-relaxed text-muted"
+            >
+              {{ campaign.submissionDesc }}
+            </p>
+            <a
+              v-if="campaign.submissionFileUrl"
+              :href="campaign.submissionFileUrl"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="inline-flex items-center gap-2 text-sm font-medium text-brand hover:underline"
+            >
+              <Download class="h-4 w-4 shrink-0" />
+              <span class="truncate">
+                {{ campaign.submissionOriginalName || t('campaigns.drawer.downloadSubmission') }}
+              </span>
+            </a>
+          </section>
+
+          <section v-if="showSubmitForm" class="space-y-3">
+            <h3 class="text-sm font-semibold text-ink">
+              {{ t('campaigns.drawer.submitDeliverable') }}
+            </h3>
+            <div>
+              <label class="mb-1.5 block text-xs text-muted">
+                {{ t('campaigns.drawer.videoFile') }}
+                <span class="text-down">*</span>
+              </label>
+              <UploadZone
+                compact
+                :accept="VIDEO_ACCEPT"
+                :title="t('campaigns.drawer.videoDropTitle')"
+                :hint="t('campaigns.drawer.videoDropHint')"
+                :drop-active="t('content.upload.dropActive')"
+                :drop-hint="t('content.upload.dropHint')"
+                @select="onVideoSelect"
+              />
+              <p v-if="submissionFile" class="mt-2 truncate text-xs text-muted">
+                {{ submissionFile.name }}
+              </p>
+            </div>
+            <div>
+              <label class="mb-1.5 block text-xs text-muted" for="deliverable-desc">
+                {{ t('campaigns.drawer.submissionDesc') }}
+                <span class="text-down">*</span>
+              </label>
+              <textarea
+                id="deliverable-desc"
+                v-model="submissionDesc"
+                rows="4"
+                class="w-full rounded-xl border border-line bg-page px-3 py-2.5 text-sm text-ink outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+                :placeholder="t('campaigns.drawer.submissionDescPlaceholder')"
+              />
+            </div>
+            <p v-if="submitError" class="text-xs text-down">{{ submitError }}</p>
+          </section>
+        </div>
+
+        <footer
+          class="flex shrink-0 flex-col gap-2 border-t border-line bg-card px-4 py-3 sm:px-5 sm:py-4"
+          style="padding-bottom: max(0.75rem, env(safe-area-inset-bottom))"
+        >
+          <div class="flex gap-3">
+            <button
+              type="button"
+              class="flex-1 rounded-xl border border-line bg-page px-4 py-2.5 text-sm font-medium text-muted transition-colors hover:text-ink"
+              :disabled="actionLoading"
+              @click="emit('close')"
+            >
+              {{ t('campaigns.drawer.cancel') }}
+            </button>
+
+            <button
+              v-if="showAccept"
+              type="button"
+              class="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-hover disabled:opacity-60"
+              :disabled="actionLoading"
+              @click="emit('accept', campaign)"
+            >
+              <Loader2 v-if="actionLoading" class="h-4 w-4 animate-spin" />
+              {{ t('campaigns.actions.accept') }}
+            </button>
+
+            <button
+              v-else-if="showSubmitForm"
+              type="button"
+              class="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-hover disabled:opacity-60"
+              :disabled="actionLoading"
+              @click="onSubmitDeliverable"
+            >
+              <Loader2 v-if="actionLoading" class="h-4 w-4 animate-spin" />
+              {{
+                actionLoading
+                  ? t('campaigns.drawer.uploading')
+                  : t('campaigns.actions.submitDeliverable')
+              }}
+            </button>
+
+            <button
+              v-else-if="showApprove"
+              type="button"
+              class="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-hover disabled:opacity-60"
+              :disabled="actionLoading"
+              @click="emit('approve', campaign)"
+            >
+              <Loader2 v-if="actionLoading" class="h-4 w-4 animate-spin" />
+              {{ t('campaigns.actions.approve') }}
+            </button>
+          </div>
+        </footer>
       </aside>
     </Transition>
   </Teleport>

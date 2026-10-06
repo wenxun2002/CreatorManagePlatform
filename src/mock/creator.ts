@@ -1,6 +1,9 @@
 import type { CreatorProfile } from '@/types/dashboard'
 
-/** Shared creator identity — used by auth store and dashboard profile card. */
+/**
+ * Durable creator KPI showcase (followers / likes / etc.).
+ * Auth supplies real name/id; social metrics merge from here until the API provides them.
+ */
 export const MOCK_CREATOR_PROFILE: CreatorProfile = {
   id: 'creator-001',
   name: 'Nova Chen',

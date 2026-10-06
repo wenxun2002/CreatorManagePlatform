@@ -8,11 +8,13 @@ import {
   Megaphone,
   Wallet,
 } from 'lucide-vue-next'
-import { APP_NAV_ITEMS } from '@/constants/nav'
+import { navItemsForRole } from '@/constants/nav'
+import { useAuthStore } from '@/stores/useAuthStore'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 
 const iconMap = {
   layout: LayoutDashboard,
@@ -22,6 +24,7 @@ const iconMap = {
 }
 
 const activePath = computed(() => route.path)
+const navItems = computed(() => navItemsForRole(auth.role))
 
 function go(to: string) {
   void router.push(to)
@@ -36,13 +39,15 @@ function go(to: string) {
       </div>
       <div>
         <p class="text-sm font-semibold text-ink">{{ t('brand.name') }}</p>
-        <p class="text-xs text-faint">Creator Hub</p>
+        <p class="text-xs text-faint">
+          {{ auth.role === 'manager' ? t('auth.roles.manager') : t('auth.roles.creator') }}
+        </p>
       </div>
     </div>
 
     <nav class="flex flex-1 flex-col gap-1 px-3 py-2">
       <button
-        v-for="item in APP_NAV_ITEMS"
+        v-for="item in navItems"
         :key="item.key"
         type="button"
         class="flex items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors"

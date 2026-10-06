@@ -1,16 +1,11 @@
 /**
- * Dashboard Mock — Single Source of Truth
+ * Dashboard Mock — Single Source of Truth (SSOT)
  *
- * Data flow (all UI numbers derive from these masters):
- *   mockVideos  ──► chart spikes (release day + 3-day long-tail)
- *               ──► overview stats (sum of scoped videos)
- *               ──► list columns (top by views / recent by date)
- *               ──► calendar events (prep meeting / publish / live Q&A)
- *
- *   demographics ──► audience doughnut (static segment mix; not video-derived)
- *   profile      ──► identity card (followers/following static; likes ≈ video likes × lifetime)
- *
- * UI components must NOT invent business numbers — only render DashboardData from fetchDashboardData().
+ * Pipeline (order is intentional — never reverse):
+ *   1. Catalogs (videos / live sessions) with engagement clamped to 4–9%
+ *   2. Daily series = catalog long-tail floor + release/long-tail spikes
+ *   3. Cards / chart derive from that series; trend% = current vs previous totals
+ *   4. Sparkline (trendHistory) = current-period daily slice (what the user expects to see)
  */
 import { delay } from './delay'
 import { formatCompactNumber } from '@/utils/format'
@@ -25,6 +20,7 @@ import type {
   DualChartData,
   ListCardItem,
   OverviewStat,
+  TrendHistoryPoint,
 } from '@/types/dashboard'
 
 export interface MockVideo {
@@ -36,13 +32,61 @@ export interface MockVideo {
   views: number
   likes: number
   revenue: number
-  /** Publish / shoot clock time on release day */
   publishTime: string
 }
 
+interface VideoDailyPoint {
+  date: string
+  views: number
+  likes: number
+  revenue: number
+}
+
+interface LiveDailyPoint {
+  date: string
+  viewers: number
+  gmv: number
+  gifts: number
+  avgWatchSec: number
+}
+
+interface MockLiveSession {
+  id: string
+  title: string
+  coverUrl: string
+  date: string
+  durationMins: number
+  peakViewers: number
+  avgWatchSec: number
+  gmv: number
+  gifts: number
+}
+
+interface MockLiveProduct {
+  id: string
+  title: string
+  coverUrl: string
+  sold: number
+  gmv: number
+}
+
+interface MockSupporter {
+  id: string
+  name: string
+  avatarUrl: string
+  contribution: number
+}
+
+/** Release-day weight + 3-day long-tail (sums to 1). */
 const LONG_TAIL_WEIGHTS = [0.55, 0.25, 0.15, 0.05] as const
-const BASE_DAILY_VIEWS = 10_000
-const BASE_DAILY_REVENUE = 100
+const ENGAGEMENT_MIN = 0.04
+const ENGAGEMENT_MAX = 0.09
+
+/** Catalog long-tail floor — keeps idle days off absolute zero (no 90° cliffs). */
+const BASE_VIEWS_MIN = 5_000
+const BASE_VIEWS_MAX = 8_000
+const BASE_REVENUE_MIN = 50
+const BASE_REVENUE_MAX = 80
 
 function parseDate(iso: string): Date {
   const [y, m, d] = iso.split('-').map(Number)
@@ -77,6 +121,84 @@ function dayOffset(fromIso: string, toIso: string): number {
   return Math.round((parseDate(toIso).getTime() - parseDate(fromIso).getTime()) / 86_400_000)
 }
 
+function rangeDayCount(range: DateRange): number {
+  return dayOffset(range.start, range.end) + 1
+}
+
+/** Same-length window immediately before `range`. */
+function previousRange(range: DateRange): DateRange {
+  const days = rangeDayCount(range)
+  return {
+    start: shiftIso(range.start, -days),
+    end: shiftIso(range.start, -1),
+  }
+}
+
+function sliceSeries<T extends { date: string }>(series: T[], range: DateRange): T[] {
+  const start = parseDate(range.start).getTime()
+  const end = parseDate(range.end).getTime()
+  return series.filter((point) => {
+    const t = parseDate(point.date).getTime()
+    return t >= start && t <= end
+  })
+}
+
+function percentChange(current: number, previous: number): number {
+  if (previous <= 0) return current > 0 ? 100 : 0
+  return Math.round(((current - previous) / previous) * 1000) / 10
+}
+
+/** Force like/view rate into the commercial [4%, 9%] band. */
+function clampLikes(views: number, likes: number): number {
+  if (views <= 0) return 0
+  const rate = likes / views
+  if (rate < ENGAGEMENT_MIN) return Math.round(views * ENGAGEMENT_MIN)
+  if (rate > ENGAGEMENT_MAX) return Math.round(views * ENGAGEMENT_MAX)
+  return likes
+}
+
+/** Deterministic 0..1 hash from an ISO date (stable across reloads). */
+function dayUnitNoise(iso: string, salt = 17): number {
+  let hash = salt >>> 0
+  for (let i = 0; i < iso.length; i += 1) {
+    hash = (hash * 31 + iso.charCodeAt(i)) >>> 0
+  }
+  return (hash % 1000) / 1000
+}
+
+/**
+ * Soft catalog floor for one day: gentle sine + weekend lift + tiny noise.
+ * Stays inside views 5–8k / revenue $50–80 so idle days still look like real long-tail traffic.
+ */
+function catalogFloorForDay(iso: string, index: number): Pick<VideoDailyPoint, 'views' | 'likes' | 'revenue'> {
+  const dow = parseDate(iso).getDay()
+  const weekend = dow === 0 || dow === 6 ? 1.06 : 1
+  const wave = 0.5 + 0.5 * Math.sin(index * 0.65)
+  const noise = dayUnitNoise(iso)
+
+  const viewsRaw =
+    BASE_VIEWS_MIN +
+    (BASE_VIEWS_MAX - BASE_VIEWS_MIN) * wave +
+    (noise - 0.5) * 900
+  const views = Math.round(
+    Math.min(BASE_VIEWS_MAX, Math.max(BASE_VIEWS_MIN, viewsRaw * weekend)),
+  )
+
+  const revenueRaw =
+    BASE_REVENUE_MIN +
+    (BASE_REVENUE_MAX - BASE_REVENUE_MIN) * wave +
+    (noise - 0.5) * 10
+  const revenue =
+    Math.round(
+      Math.min(BASE_REVENUE_MAX, Math.max(BASE_REVENUE_MIN, revenueRaw * weekend)) * 10,
+    ) / 10
+
+  const er = ENGAGEMENT_MIN + (ENGAGEMENT_MAX - ENGAGEMENT_MIN) * (0.35 + 0.3 * noise)
+  const likes = clampLikes(views, Math.round(views * er))
+
+  return { views, likes, revenue }
+}
+
 function eventStatus(iso: string, todayIso: string): CalendarEvent['status'] {
   return iso < todayIso ? 'past' : 'upcoming'
 }
@@ -91,8 +213,9 @@ function pushEvent(
 }
 
 /**
- * Master content catalog. releaseDate offsets are relative to "today"
+ * Master short-video catalog. releaseDate offsets are relative to "today"
  * so the default 14-day picker always covers every video.
+ * Likes are clamped to 4–9% ER after construction.
  */
 function buildMockVideos(today = new Date()): MockVideo[] {
   const day = (offsetFromToday: number) => {
@@ -102,7 +225,41 @@ function buildMockVideos(today = new Date()): MockVideo[] {
     return formatDate(d)
   }
 
-  return [
+  const raw: MockVideo[] = [
+    // Older releases so the previous same-length window has real WoW signal
+    {
+      id: 'v-hist-01',
+      title: 'Brand Collab Recap',
+      coverUrl: 'https://images.unsplash.com/photo-1556761175-5973dc0f32e7?w=320&h=200&fit=crop',
+      duration: '01:48',
+      releaseDate: day(-22),
+      views: 312_000,
+      likes: 21_840,
+      revenue: 890,
+      publishTime: '18:30',
+    },
+    {
+      id: 'v-hist-02',
+      title: 'Editing Workflow Deep Dive',
+      coverUrl: 'https://images.unsplash.com/photo-1618005182384-a83b536e735b?w=320&h=200&fit=crop',
+      duration: '04:12',
+      releaseDate: day(-18),
+      views: 198_600,
+      likes: 14_900,
+      revenue: 560,
+      publishTime: '16:00',
+    },
+    {
+      id: 'v-hist-03',
+      title: 'Q&A: Creator Taxes',
+      coverUrl: 'https://images.unsplash.com/photo-1454165804606-c3d57bc86b40?w=320&h=200&fit=crop',
+      duration: '02:55',
+      releaseDate: day(-15),
+      views: 145_200,
+      likes: 9_440,
+      revenue: 410,
+      publishTime: '19:00',
+    },
     {
       id: 'v-viral-01',
       title: 'Morning Routine That Went Viral',
@@ -121,7 +278,7 @@ function buildMockVideos(today = new Date()): MockVideo[] {
       duration: '02:16',
       releaseDate: day(-4),
       views: 982_400,
-      likes: 251_280,
+      likes: 68_768, // ~7% ER (was 25.6% — clamped at source)
       revenue: 2_140,
       publishTime: '19:30',
     },
@@ -203,47 +360,68 @@ function buildMockVideos(today = new Date()): MockVideo[] {
       publishTime: '17:30',
     },
   ]
+
+  return raw.map((video) => ({
+    ...video,
+    likes: clampLikes(video.views, video.likes),
+  }))
 }
 
-function videosInRange(range: DateRange, videos: MockVideo[]): MockVideo[] {
-  const start = parseDate(range.start).getTime()
-  const end = parseDate(range.end).getTime()
-  return videos.filter((video) => {
-    const t = parseDate(video.releaseDate).getTime()
-    return t >= start && t <= end
-  })
-}
-
-function relativeDaysAgo(iso: string, now = new Date()): string {
-  const days = Math.max(0, dayOffset(iso, formatDate(now)))
-  if (days === 0) return 'today'
-  if (days === 1) return '1d ago'
-  return `${days}d ago`
-}
-
-/** Chart: baseline + each video's views/revenue injected on release day with long-tail. */
-function buildChartFromVideos(range: DateRange, videos: MockVideo[]): DualChartData {
+/**
+ * Daily series SSOT for short video.
+ * Start from catalog long-tail floor, then add release + weighted long-tail spikes.
+ */
+function buildVideoDailySeries(range: DateRange, videos: MockVideo[]): VideoDailyPoint[] {
   const days = eachDay(range)
-  const viewsMap = new Map<string, number>()
-  const revenueMap = new Map<string, number>()
-
-  for (let i = 0; i < days.length; i += 1) {
-    const day = days[i]
-    const wobble = ((i % 5) - 2) * 180
-    viewsMap.set(day, BASE_DAILY_VIEWS + wobble)
-    revenueMap.set(day, BASE_DAILY_REVENUE + ((i % 4) - 1.5) * 8)
-  }
+  const map = new Map(
+    days.map((date, index) => {
+      const floor = catalogFloorForDay(date, index)
+      return [date, { date, ...floor }]
+    }),
+  )
 
   for (const video of videos) {
     for (let offset = 0; offset < LONG_TAIL_WEIGHTS.length; offset += 1) {
       const key = shiftIso(video.releaseDate, offset)
-      if (!viewsMap.has(key)) continue
+      const point = map.get(key)
+      if (!point) continue
       const weight = LONG_TAIL_WEIGHTS[offset]
-      viewsMap.set(key, (viewsMap.get(key) ?? 0) + video.views * weight)
-      revenueMap.set(key, (revenueMap.get(key) ?? 0) + video.revenue * weight)
+      point.views += video.views * weight
+      point.likes += video.likes * weight
+      point.revenue += video.revenue * weight
     }
   }
 
+  return days.map((date) => {
+    const point = map.get(date)!
+    return {
+      date,
+      views: Math.round(point.views),
+      likes: Math.round(point.likes),
+      revenue: Math.round(point.revenue * 10) / 10,
+    }
+  })
+}
+
+function sumVideoSeries(series: VideoDailyPoint[]) {
+  return series.reduce(
+    (acc, point) => {
+      acc.views += point.views
+      acc.likes += point.likes
+      acc.revenue += point.revenue
+      return acc
+    },
+    { views: 0, likes: 0, revenue: 0 },
+  )
+}
+
+function toTrendHistory(
+  series: { date: string; value: number }[],
+): TrendHistoryPoint[] {
+  return series.map((point) => ({ date: point.date, value: point.value }))
+}
+
+function buildChartFromVideoSeries(series: VideoDailyPoint[]): DualChartData {
   return {
     yAxisName1Key: 'dashboard.chart.views',
     yAxisName2Key: 'dashboard.chart.revenue',
@@ -251,46 +429,82 @@ function buildChartFromVideos(range: DateRange, videos: MockVideo[]): DualChartD
       nameKey: 'dashboard.chart.views',
       yAxisName1Key: 'dashboard.chart.views',
       yAxisName2Key: 'dashboard.chart.revenue',
-      points: days.map((date) => ({
-        date,
-        value: Math.round(viewsMap.get(date) ?? BASE_DAILY_VIEWS),
-      })),
+      points: series.map((point) => ({ date: point.date, value: point.views })),
     },
     revenue: {
       nameKey: 'dashboard.chart.revenue',
-      points: days.map((date) => ({
-        date,
-        value: Math.round((revenueMap.get(date) ?? BASE_DAILY_REVENUE) * 10) / 10,
-      })),
+      points: series.map((point) => ({ date: point.date, value: point.revenue })),
     },
   }
 }
 
-interface MockLiveSession {
-  id: string
-  title: string
-  coverUrl: string
-  date: string
-  durationMins: number
-  peakViewers: number
-  avgWatchSec: number
-  gmv: number
-  gifts: number
-}
+/**
+ * Cards: totals from current series; WoW % vs previous totals;
+ * sparkline = current-period daily path (matches what the card is summarizing).
+ */
+function buildStatsFromVideoSeries(
+  current: VideoDailyPoint[],
+  previous: VideoDailyPoint[],
+): OverviewStat[] {
+  const cur = sumVideoSeries(current)
+  const prev = sumVideoSeries(previous)
+  const gpm = cur.views > 0 ? (cur.revenue / cur.views) * 1000 : 0
+  const prevGpm = prev.views > 0 ? (prev.revenue / prev.views) * 1000 : 0
 
-interface MockLiveProduct {
-  id: string
-  title: string
-  coverUrl: string
-  sold: number
-  gmv: number
-}
+  const viewsSpark = toTrendHistory(current.map((p) => ({ date: p.date, value: p.views })))
+  const likesSpark = toTrendHistory(current.map((p) => ({ date: p.date, value: p.likes })))
+  const revenueSpark = toTrendHistory(current.map((p) => ({ date: p.date, value: p.revenue })))
+  const gpmSpark = toTrendHistory(
+    current.map((p) => ({
+      date: p.date,
+      value: p.views > 0 ? Math.round((p.revenue / p.views) * 1000 * 10) / 10 : 0,
+    })),
+  )
 
-interface MockSupporter {
-  id: string
-  name: string
-  avatarUrl: string
-  contribution: number
+  return [
+    {
+      id: 'views',
+      labelKey: 'dashboard.stats.views',
+      value: Math.round(cur.views),
+      icon: 'eye',
+      format: 'compact',
+      trendPercent: percentChange(cur.views, prev.views),
+      trendLabelKey: 'dashboard.stats.vsLastWeek',
+      trendHistory: viewsSpark,
+    },
+    {
+      id: 'engagement',
+      labelKey: 'dashboard.stats.engagement',
+      value: Math.round(cur.likes),
+      icon: 'heart',
+      format: 'compact',
+      trendPercent: percentChange(cur.likes, prev.likes),
+      trendLabelKey: 'dashboard.stats.vsLastWeek',
+      trendHistory: likesSpark,
+    },
+    {
+      id: 'revenue',
+      labelKey: 'dashboard.stats.estRevenue',
+      value: Math.round(cur.revenue),
+      icon: 'dollar',
+      prefix: '$',
+      format: 'currency',
+      trendPercent: percentChange(cur.revenue, prev.revenue),
+      trendLabelKey: 'dashboard.stats.vsLastWeek',
+      trendHistory: revenueSpark,
+    },
+    {
+      id: 'gpm',
+      labelKey: 'dashboard.stats.gpm',
+      value: Math.round(gpm * 10) / 10,
+      icon: 'cart',
+      prefix: '$',
+      format: 'currency',
+      trendPercent: percentChange(gpm, prevGpm),
+      trendLabelKey: 'dashboard.stats.vsLastWeek',
+      trendHistory: gpmSpark,
+    },
+  ]
 }
 
 function buildMockLiveSessions(today = new Date()): MockLiveSession[] {
@@ -302,6 +516,29 @@ function buildMockLiveSessions(today = new Date()): MockLiveSession[] {
   }
 
   return [
+    // Prior-window streams so WoW / sparklines are not comparing against empty zeros
+    {
+      id: 'live-hist-01',
+      title: 'Mid-month Skincare Drop',
+      coverUrl: 'https://images.unsplash.com/photo-1596462502278-27bfdc403348?w=320&h=200&fit=crop',
+      date: day(-20),
+      durationMins: 90,
+      peakViewers: 11_200,
+      avgWatchSec: 252,
+      gmv: 15_400,
+      gifts: 1_890,
+    },
+    {
+      id: 'live-hist-02',
+      title: 'Desk Accessories Clearance',
+      coverUrl: 'https://images.unsplash.com/photo-1524758631624-e2822e304c36?w=320&h=200&fit=crop',
+      date: day(-16),
+      durationMins: 105,
+      peakViewers: 19_800,
+      avgWatchSec: 310,
+      gmv: 27_500,
+      gifts: 3_420,
+    },
     {
       id: 'live-01',
       title: 'Prime-time Beauty Drop',
@@ -421,38 +658,30 @@ function buildMockSupporters(): MockSupporter[] {
 }
 
 /**
- * Live chart: concurrent viewers & GMV by stream day.
- * Curve is low at session start days, peaks mid-window, eases off — mimicking live audience flow.
+ * Live daily series: metrics only on stream days. Non-stream days are strictly zero
+ * (no phantom GMV / residual viewers).
  */
-function buildChartFromLiveSessions(
+function buildLiveDailySeries(
   range: DateRange,
   sessions: MockLiveSession[],
-): DualChartData {
-  const days = eachDay(range)
+): LiveDailyPoint[] {
   const sessionByDate = new Map(sessions.map((s) => [s.date, s]))
-  const n = Math.max(days.length - 1, 1)
-
-  const viewersPoints = days.map((date, i) => {
+  return eachDay(range).map((date) => {
     const session = sessionByDate.get(date)
-    if (session) {
-      return { date, value: session.peakViewers }
+    if (!session) {
+      return { date, viewers: 0, gmv: 0, gifts: 0, avgWatchSec: 0 }
     }
-    // Soft background curve for non-stream days (warmup / residual)
-    const progress = i / n
-    const bell = Math.sin(progress * Math.PI)
-    return { date, value: Math.round(1_200 + bell * 3_800) }
-  })
-
-  const gmvPoints = days.map((date, i) => {
-    const session = sessionByDate.get(date)
-    if (session) {
-      return { date, value: session.gmv }
+    return {
+      date,
+      viewers: session.peakViewers,
+      gmv: session.gmv,
+      gifts: session.gifts,
+      avgWatchSec: session.avgWatchSec,
     }
-    const progress = i / n
-    const bell = Math.sin(progress * Math.PI)
-    return { date, value: Math.round(180 + bell * 920) }
   })
+}
 
+function buildChartFromLiveSeries(series: LiveDailyPoint[]): DualChartData {
   return {
     yAxisName1Key: 'dashboard.chart.viewers',
     yAxisName2Key: 'dashboard.chart.gmv',
@@ -460,83 +689,88 @@ function buildChartFromLiveSessions(
       nameKey: 'dashboard.chart.viewers',
       yAxisName1Key: 'dashboard.chart.viewers',
       yAxisName2Key: 'dashboard.chart.gmv',
-      points: viewersPoints,
+      points: series.map((point) => ({ date: point.date, value: point.viewers })),
     },
     revenue: {
       nameKey: 'dashboard.chart.gmv',
-      points: gmvPoints,
+      points: series.map((point) => ({ date: point.date, value: point.gmv })),
     },
   }
 }
 
-function buildLiveStats(sessions: MockLiveSession[]): OverviewStat[] {
-  const peak = sessions.reduce((max, s) => Math.max(max, s.peakViewers), 0)
-  const avgWatch =
-    sessions.reduce((sum, s) => sum + s.avgWatchSec, 0) / Math.max(sessions.length, 1)
-  const totalGmv = sessions.reduce((sum, s) => sum + s.gmv, 0)
-  const totalGifts = sessions.reduce((sum, s) => sum + s.gifts, 0)
+function maxOf(series: number[]): number {
+  return series.reduce((max, value) => Math.max(max, value), 0)
+}
 
-  const chartProxy = buildChartFromLiveSessions(
-    {
-      start: sessions[0]?.date ?? formatDate(new Date()),
-      end: sessions[sessions.length - 1]?.date ?? formatDate(new Date()),
-    },
-    sessions,
-  )
-  const endDate =
-    chartProxy.views.points[chartProxy.views.points.length - 1]?.date ??
-    sessions[sessions.length - 1]?.date
+function avgOfPositive(values: number[]): number {
+  const positive = values.filter((v) => v > 0)
+  if (positive.length === 0) return 0
+  return positive.reduce((sum, v) => sum + v, 0) / positive.length
+}
 
-  // Intentionally 2 up / 2 down so sparklines demonstrate both directions
-  const peakTrend = 9.8
-  const avgWatchTrend = -4.2
-  const gmvTrend = 14.5
-  const giftsTrend = -7.1
+function buildLiveStatsFromSeries(
+  current: LiveDailyPoint[],
+  previous: LiveDailyPoint[],
+): OverviewStat[] {
+  const curPeak = maxOf(current.map((p) => p.viewers))
+  const prevPeak = maxOf(previous.map((p) => p.viewers))
+  const curAvgWatch = avgOfPositive(current.map((p) => p.avgWatchSec))
+  const prevAvgWatch = avgOfPositive(previous.map((p) => p.avgWatchSec))
+  const curGmv = current.reduce((sum, p) => sum + p.gmv, 0)
+  const prevGmv = previous.reduce((sum, p) => sum + p.gmv, 0)
+  const curGifts = current.reduce((sum, p) => sum + p.gifts, 0)
+  const prevGifts = previous.reduce((sum, p) => sum + p.gifts, 0)
 
   return [
     {
       id: 'peakViewers',
       labelKey: 'dashboard.stats.peakConcurrent',
-      value: peak,
+      value: curPeak,
       icon: 'users',
       format: 'compact',
-      trendPercent: peakTrend,
+      trendPercent: percentChange(curPeak, prevPeak),
       trendLabelKey: 'dashboard.stats.vsLastWeek',
-      trendHistory: buildTrendHistory(peak, peakTrend, endDate),
+      trendHistory: toTrendHistory(current.map((p) => ({ date: p.date, value: p.viewers }))),
     },
     {
       id: 'avgWatch',
       labelKey: 'dashboard.stats.avgWatchTime',
-      value: Math.round(avgWatch),
+      value: Math.round(curAvgWatch),
       icon: 'clock',
       format: 'duration',
-      trendPercent: avgWatchTrend,
+      trendPercent: percentChange(curAvgWatch, prevAvgWatch),
       trendLabelKey: 'dashboard.stats.vsLastWeek',
-      trendHistory: buildTrendHistory(Math.round(avgWatch), avgWatchTrend, endDate),
+      trendHistory: toTrendHistory(
+        current.map((p) => ({ date: p.date, value: p.avgWatchSec })),
+      ),
     },
     {
       id: 'liveGmv',
       labelKey: 'dashboard.stats.liveGmv',
-      value: totalGmv,
+      value: curGmv,
       icon: 'cart',
       prefix: '$',
       format: 'currency',
-      trendPercent: gmvTrend,
+      trendPercent: percentChange(curGmv, prevGmv),
       trendLabelKey: 'dashboard.stats.vsLastWeek',
-      trendHistory: buildTrendHistory(totalGmv, gmvTrend, endDate),
+      trendHistory: toTrendHistory(current.map((p) => ({ date: p.date, value: p.gmv }))),
     },
     {
       id: 'gifts',
       labelKey: 'dashboard.stats.giftsTips',
-      value: totalGifts,
+      value: curGifts,
       icon: 'gift',
       prefix: '$',
       format: 'currency',
-      trendPercent: giftsTrend,
+      trendPercent: percentChange(curGifts, prevGifts),
       trendLabelKey: 'dashboard.stats.vsLastWeek',
-      trendHistory: buildTrendHistory(totalGifts, giftsTrend, endDate),
+      trendHistory: toTrendHistory(current.map((p) => ({ date: p.date, value: p.gifts }))),
     },
   ]
+}
+
+function formatCompactCurrencyLike(value: number): string {
+  return `$${formatCompactNumber(value)}`
 }
 
 function buildLiveLists(sessions: MockLiveSession[]): DashboardListColumn[] {
@@ -589,8 +823,11 @@ function buildLiveLists(sessions: MockLiveSession[]): DashboardListColumn[] {
   ]
 }
 
-function formatCompactCurrencyLike(value: number): string {
-  return `$${formatCompactNumber(value)}`
+function relativeDaysAgo(iso: string, now = new Date()): string {
+  const days = Math.max(0, dayOffset(iso, formatDate(now)))
+  if (days === 0) return 'today'
+  if (days === 1) return '1d ago'
+  return `${days}d ago`
 }
 
 /**
@@ -598,7 +835,6 @@ function formatCompactCurrencyLike(value: number): string {
  * - Day before release → prep meeting (for mid/high performers)
  * - Release day → video publish (+ evening live for viral hits)
  * - Day after viral → sponsor follow-up meeting
- * - Today also gets a standing business slot when a video publishes today
  */
 function buildEventsMapFromVideos(
   videos: MockVideo[],
@@ -650,8 +886,6 @@ function buildEventsMapFromVideos(
     }
   }
 
-  // Stable recurring slots around "today" so the agenda is never empty on demo day
-  // when the day's video already has events — only add if missing a business block.
   const todayEvents = map[todayIso] ?? []
   const hasMeetingToday = todayEvents.some((e) => e.type === 'meeting')
   if (!hasMeetingToday) {
@@ -675,12 +909,24 @@ function buildEventsMapFromVideos(
     })
   }
 
-  // Sort each day by time string for stable agenda order
   for (const key of Object.keys(map)) {
     map[key].sort((a, b) => a.time.localeCompare(b.time))
   }
 
   return map
+}
+
+/** Videos whose release (or long-tail spill) contributes inside `range`. */
+function videosTouchingRange(range: DateRange, videos: MockVideo[]): MockVideo[] {
+  const start = parseDate(range.start).getTime()
+  const end = parseDate(range.end).getTime()
+  return videos.filter((video) => {
+    for (let offset = 0; offset < LONG_TAIL_WEIGHTS.length; offset += 1) {
+      const t = parseDate(shiftIso(video.releaseDate, offset)).getTime()
+      if (t >= start && t <= end) return true
+    }
+    return false
+  })
 }
 
 function buildTopVideos(videos: MockVideo[]): ListCardItem[] {
@@ -712,7 +958,7 @@ function buildRecentPosts(videos: MockVideo[]): ListCardItem[] {
 }
 
 function buildLists(range: DateRange, videos: MockVideo[]): DashboardListColumn[] {
-  const scoped = videosInRange(range, videos)
+  const scoped = videosTouchingRange(range, videos)
   return [
     {
       id: 'top',
@@ -728,152 +974,6 @@ function buildLists(range: DateRange, videos: MockVideo[]): DashboardListColumn[
       id: 'opportunities',
       titleKey: 'dashboard.lists.opportunities',
       items: [],
-    },
-  ]
-}
-
-function percentChange(current: number, previous: number): number {
-  if (previous <= 0) return current > 0 ? 100 : 0
-  return Math.round(((current - previous) / previous) * 1000) / 10
-}
-
-/**
- * Directed random walk over 7 days ending near `endValue` on `endDateIso`.
- * Overall direction follows `trendPercent`; day-to-day noise stays mild
- * so the curve reads like real business data (not a sine/sawtooth wave).
- */
-function buildTrendHistory(
-  endValue: number,
-  trendPercent: number,
-  endDateIso?: string,
-  days = 7,
-): { date: string; value: number }[] {
-  const safeEnd = Math.max(Math.abs(endValue), 0.01)
-  const isDown = trendPercent < 0
-  const magnitude = Math.min(0.55, Math.abs(trendPercent) / 100)
-
-  // Rising → low start; falling → high start. Gap sized by |trendPercent|.
-  const startValue = isDown ? safeEnd / (1 - magnitude || 0.5) : safeEnd * (1 - magnitude)
-  const safeStart = Math.max(startValue, safeEnd * 0.15)
-
-  // Deterministic PRNG so mock stays stable across reloads for the same series
-  let seed = Math.floor(safeEnd * 1000 + Math.abs(trendPercent) * 97) % 233280
-  const rand = () => {
-    seed = (seed * 9301 + 49297) % 233280
-    return seed / 233280
-  }
-
-  const drift = (safeEnd - safeStart) / (days - 1)
-  const values: number[] = []
-  let current = safeStart
-
-  for (let i = 0; i < days; i++) {
-    if (i === 0) {
-      values.push(roundHistoryValue(current, endValue))
-      continue
-    }
-    if (i === days - 1) {
-      values.push(roundHistoryValue(safeEnd, endValue))
-      break
-    }
-
-    const noiseAmp = Math.abs(current) * 0.025
-    const noise = (rand() - 0.5) * 2 * noiseAmp
-    current = Math.max(0, current + drift + noise)
-
-    const expected = safeStart + drift * i
-    current = current * 0.72 + expected * 0.28
-
-    if (isDown && current >= values[0]!) {
-      current = values[0]! * (1 - 0.04 * i)
-    } else if (!isDown && current <= values[0]!) {
-      current = values[0]! * (1 + 0.04 * i)
-    }
-
-    values.push(roundHistoryValue(current, endValue))
-  }
-
-  const first = values[0]!
-  const last = values[days - 1]!
-  if (isDown && last >= first) {
-    values[days - 1] = roundHistoryValue(first * (1 - Math.max(0.08, magnitude)), endValue)
-  } else if (!isDown && last <= first) {
-    values[days - 1] = roundHistoryValue(first * (1 + Math.max(0.08, magnitude)), endValue)
-  }
-
-  const endDate = endDateIso ? parseDate(endDateIso) : new Date()
-  return values.map((value, index) => {
-    const d = new Date(endDate)
-    d.setDate(endDate.getDate() - (days - 1 - index))
-    return { date: formatDate(d), value }
-  })
-}
-
-function roundHistoryValue(value: number, endValue: number): number {
-  return Number.isInteger(endValue) ? Math.round(value) : Math.round(value * 10) / 10
-}
-
-/** Overview cards + trends for short-video tab (derived from chart halves + video sums). */
-function buildStatsFromChart(
-  chart: DualChartData,
-  videos: MockVideo[],
-): OverviewStat[] {
-  const viewsPoints = chart.views.points
-
-  const totalViews = videos.reduce((sum, v) => sum + v.views, 0)
-  const totalLikes = videos.reduce((sum, v) => sum + v.likes, 0)
-  const totalRevenue = videos.reduce((sum, v) => sum + v.revenue, 0)
-  const gpm = totalViews > 0 ? (totalRevenue / totalViews) * 1000 : 0
-
-  // Intentionally 2 up / 2 down so sparklines demonstrate both directions
-  const viewsTrend = 12.5
-  const engagementTrend = -8.3
-  const revenueTrend = 15.2
-  const gpmTrend = -5.6
-  const endDate = viewsPoints[viewsPoints.length - 1]?.date
-
-  return [
-    {
-      id: 'views',
-      labelKey: 'dashboard.stats.views',
-      value: Math.round(totalViews),
-      icon: 'eye',
-      format: 'compact',
-      trendPercent: viewsTrend,
-      trendLabelKey: 'dashboard.stats.vsLastWeek',
-      trendHistory: buildTrendHistory(Math.round(totalViews / 7), viewsTrend, endDate),
-    },
-    {
-      id: 'engagement',
-      labelKey: 'dashboard.stats.engagement',
-      value: Math.round(totalLikes),
-      icon: 'heart',
-      format: 'compact',
-      trendPercent: engagementTrend,
-      trendLabelKey: 'dashboard.stats.vsLastWeek',
-      trendHistory: buildTrendHistory(Math.round(totalLikes / 7), engagementTrend, endDate),
-    },
-    {
-      id: 'revenue',
-      labelKey: 'dashboard.stats.estRevenue',
-      value: Math.round(totalRevenue),
-      icon: 'dollar',
-      prefix: '$',
-      format: 'currency',
-      trendPercent: revenueTrend,
-      trendLabelKey: 'dashboard.stats.vsLastWeek',
-      trendHistory: buildTrendHistory(Math.round(totalRevenue / 7), revenueTrend, endDate),
-    },
-    {
-      id: 'gpm',
-      labelKey: 'dashboard.stats.gpm',
-      value: Math.round(gpm * 10) / 10,
-      icon: 'cart',
-      prefix: '$',
-      format: 'currency',
-      trendPercent: gpmTrend,
-      trendLabelKey: 'dashboard.stats.vsLastWeek',
-      trendHistory: buildTrendHistory(Math.round(gpm * 10) / 10, gpmTrend, endDate),
     },
   ]
 }
@@ -908,30 +1008,34 @@ export async function fetchDashboardData(
 
   const mockVideos = buildMockVideos()
   const eventsMap = buildEventsMapFromVideos(mockVideos)
+  const prev = previousRange(range)
+  const extended: DateRange = { start: prev.start, end: range.end }
 
   if (tab === 'live') {
     const allSessions = buildMockLiveSessions()
-    const sessions = sessionsInRange(range, allSessions)
-    const scoped = sessions.length > 0 ? sessions : allSessions
-    const chart = buildChartFromLiveSessions(range, scoped)
+    const liveSeries = buildLiveDailySeries(extended, allSessions)
+    const currentSeries = sliceSeries(liveSeries, range)
+    const previousSeries = sliceSeries(liveSeries, prev)
+    const scopedSessions = sessionsInRange(range, allSessions)
 
     return {
       profile: buildProfile(),
-      stats: buildLiveStats(scoped),
-      chart,
+      stats: buildLiveStatsFromSeries(currentSeries, previousSeries),
+      chart: buildChartFromLiveSeries(currentSeries),
       demographics: demographics(),
-      lists: buildLiveLists(scoped),
+      lists: buildLiveLists(scopedSessions.length > 0 ? scopedSessions : allSessions),
       eventsMap,
     }
   }
 
-  const scopedVideos = videosInRange(range, mockVideos)
-  const chart = buildChartFromVideos(range, mockVideos)
+  const videoSeries = buildVideoDailySeries(extended, mockVideos)
+  const currentSeries = sliceSeries(videoSeries, range)
+  const previousSeries = sliceSeries(videoSeries, prev)
 
   return {
     profile: buildProfile(),
-    stats: buildStatsFromChart(chart, scopedVideos),
-    chart,
+    stats: buildStatsFromVideoSeries(currentSeries, previousSeries),
+    chart: buildChartFromVideoSeries(currentSeries),
     demographics: demographics(),
     lists: buildLists(range, mockVideos),
     eventsMap,

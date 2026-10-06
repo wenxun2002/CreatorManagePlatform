@@ -8,11 +8,13 @@ import {
   Megaphone,
   Wallet,
 } from 'lucide-vue-next'
-import { APP_NAV_ITEMS } from '@/constants/nav'
+import { navItemsForRole } from '@/constants/nav'
+import { useAuthStore } from '@/stores/useAuthStore'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 
 const iconMap = {
   layout: LayoutDashboard,
@@ -22,6 +24,7 @@ const iconMap = {
 }
 
 const activePath = computed(() => route.path)
+const navItems = computed(() => navItemsForRole(auth.role))
 
 function go(to: string) {
   void router.push(to)
@@ -34,9 +37,12 @@ function go(to: string) {
     style="padding-bottom: env(safe-area-inset-bottom, 0px)"
     aria-label="Primary"
   >
-    <div class="grid h-16 grid-cols-4">
+    <div
+      class="grid h-16"
+      :style="{ gridTemplateColumns: `repeat(${Math.max(navItems.length, 1)}, minmax(0, 1fr))` }"
+    >
       <button
-        v-for="item in APP_NAV_ITEMS"
+        v-for="item in navItems"
         :key="item.key"
         type="button"
         class="flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition-colors"

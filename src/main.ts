@@ -13,8 +13,19 @@ app.use(pinia)
 app.use(router)
 app.use(i18n)
 
-// Dev convenience: simulate an already-logged-in creator session
 const auth = useAuthStore(pinia)
-void auth.login().finally(() => {
+
+async function bootstrap() {
+  // Never block first paint forever if /api/user hangs (CORS / backend down).
+  await Promise.race([
+    auth.hydrate(),
+    new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 2500)
+    }),
+  ])
+
+  await router.isReady()
   app.mount('#app')
-})
+}
+
+void bootstrap()
